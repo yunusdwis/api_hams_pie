@@ -1,105 +1,168 @@
 import uuid
 import os
-import mysql.connector
+import pyodbc
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from mysql.connector import pooling
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 CORS(app)
 
-# Create MySQL connection pool
-db_pool = pooling.MySQLConnectionPool(
-    pool_name="my_pool",
-    pool_size=5,
-    host="localhost",
-    user="root",
-    password="",
-    database="pie",
-    autocommit=True
-)
+# SQL Server connection configuration
+SERVER = 'localhost\SQLEXPRESS'
+DATABASE = 'system_hams_pie'
+USERNAME = 'sa'
+PASSWORD = 'sa123'
+DRIVER = '{ODBC Driver 17 for SQL Server}'
+
+# Connection string for SQL Server
+connection_string = f'DRIVER={DRIVER};SERVER={SERVER};DATABASE={DATABASE};UID={USERNAME};PWD={PASSWORD}'
 
 UPLOAD_FOLDER = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\people'
 UPLOAD_FOLDER_BPJS = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\bpjs'
-UPLOAD_FOLDER_MEDICAL_HISTORY = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\medical_history'
+UPLOAD_FOLDER_MEDICAL_CHECKUP = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\medical_checkup'
+UPLOAD_FOLDER_SKCK = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\skck'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['UPLOAD_FOLDER_BPJS'] = UPLOAD_FOLDER_BPJS
-app.config['UPLOAD_FOLDER_MEDICAL_HISTORY'] = UPLOAD_FOLDER_MEDICAL_HISTORY
+app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'] = UPLOAD_FOLDER_MEDICAL_CHECKUP
+app.config['UPLOAD_FOLDER_SKCK'] = 'path/to/skck_uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 def allowed_file(filename):
     return '.' in filename and \
         filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def handle_file_upload(file, upload_folder, uuid_prefix):
+    if file and allowed_file(file.filename):
+        # Create directory if it doesn't exist
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid_prefix}_{filename}"
+        file.save(os.path.join(upload_folder, unique_filename))
+        return unique_filename
+    return None
+
+def delete_file(file_path):
+    if file_path and os.path.exists(file_path):
+        os.remove(file_path)
+
+def get_db_connection():
+    return pyodbc.connect(connection_string)
+
+    
+@app.route('/uploads/<path:filename>')
+def serve_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 # Route to unregistered persons
 @app.route('/unregistered', methods=['POST'])
 def unregistered():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
 
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'Invalid JSON or missing Content-Type header'}), 400
+        # Handle file uploads
+        bpjs_file = request.files.get('bpjs')
+        medical_file = request.files.get('medical_checkup')
+        skck_file = request.files.get('skck')
 
-        image = data.get('image')
-        name = data.get('name')
-        nik = data.get('nik')
-        email = data.get('email')
-        address = data.get('address')
-        emergency_contact = data.get('emergency_contact')
-        building_uuid = data.get('building_uuid')
-        building_person_uuid = data.get('building_person_uuid')
-        insert = data.get('insert')
+        # Process file uploads
+        bpjs_path = None
+        medical_path = None
+        skck_path = None
 
-        if not all([name, nik, email, address, emergency_contact]):
-            return jsonify({'error': 'All fields are required'}), 400
+        if bpjs_file and bpjs_file.filename != '' and allowed_file(bpjs_file.filename):
+            filename = secure_filename(f"{uuid.uuid4().hex}_{bpjs_file.filename}")
+            bpjs_path = os.path.join(UPLOAD_FOLDER_BPJS, filename)
+            bpjs_file.save(bpjs_path)
+
+        if medical_file and medical_file.filename != '' and allowed_file(medical_file.filename):
+            filename = secure_filename(f"{uuid.uuid4().hex}_{medical_file.filename}")
+            medical_path = os.path.join(UPLOAD_FOLDER_MEDICAL_CHECKUP, filename)
+            medical_file.save(medical_path)
+
+        if skck_file and skck_file.filename != '' and allowed_file(skck_file.filename):
+            filename = secure_filename(f"{uuid.uuid4().hex}_{skck_file.filename}")
+            skck_path = os.path.join(UPLOAD_FOLDER_SKCK, filename)
+            skck_file.save(skck_path)
+
+        # Get form data
+        name = request.form.get('name')
+        nik = request.form.get('nik')
+        email = request.form.get('email')
+        address = request.form.get('address')
+        emergency_contact_name = request.form.get('emergency_contact_name')
+        emergency_contact_address = request.form.get('emergency_contact_address')
+        emergency_contact_relation = request.form.get('emergency_contact_relation')
+        emergency_contact_phone = request.form.get('emergency_contact_phone')
+        birth_place = request.form.get('birth_place')
+
+        birth_date_str = request.form.get('birth_date')
+        try:
+            birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid birth date format. Use YYYY-MM-DD'}), 400
+
+        gender = request.form.get('gender')
+        phone = request.form.get('phone')
+        building_uuid = request.form.get('building_uuid')
+        insert = request.form.get('insert')
+
+        if not all([name, nik, email, address, emergency_contact_name, 
+                emergency_contact_phone, birth_place, birth_date, gender, phone]):
+            return jsonify({'error': 'All required fields must be filled'}), 400
 
         person_uuid = str(uuid.uuid4())
 
+        # Insert person data
         cursor.execute("""
-            INSERT INTO persons (uuid, image, name, nik, email, address, emergency_contact)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (person_uuid, image, name, nik, email, address, f"+62{emergency_contact}"))
+            INSERT INTO persons (uuid, name, nik, email, address, 
+                            emergency_contact_name, emergency_contact_address,
+                            emergency_contact_relation, emergency_contact_phone,
+                            birth_place, birth_date, gender, phone,
+                            bpjs, medical_checkup, skck)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (person_uuid, name, nik, email, address,
+            emergency_contact_name, emergency_contact_address,
+            emergency_contact_relation, f"+62{emergency_contact_phone}",
+            birth_place, birth_date, gender, f"+62{phone}",
+            bpjs_path, medical_path, skck_path))
 
-        if insert == 1:
+        if insert == '1':
             building_person_uuid = str(uuid.uuid4())
             entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             cursor.execute("""
                 INSERT INTO building_persons (uuid, building_uuid, person_uuid, entry_time)
-                VALUES (%s, %s, %s, %s)
+                VALUES (?, ?, ?, ?)
             """, (building_person_uuid, building_uuid, person_uuid, entry_time))
 
             cursor.execute("""
                 UPDATE buildings 
-                    SET entry = entry + 1, 
-                        total = total + 1 
-                    WHERE uuid = %s
+                SET entry = entry + 1, 
+                    total = total + 1 
+                WHERE uuid = ?
             """, (building_uuid,))
-        else:
-            cursor.execute("""
-                UPDATE building_persons SET person_uuid = %s WHERE uuid = %s
-            """, (person_uuid, building_person_uuid))
 
         connection.commit()
         return jsonify({'message': 'Entry person successfully!'}), 200
 
     except Exception as e:
+        connection.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
-        if cursor: cursor.close()
-        if connection: connection.close()
+        cursor.close()
+        connection.close()
 
 
 @app.route('/registered', methods=['POST'])
 def registered():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
 
     try:
         data = request.get_json()
@@ -120,17 +183,17 @@ def registered():
             entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute("""
                 INSERT INTO building_persons (uuid, building_uuid, person_uuid, image, entry_time)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?)
             """, (building_person_uuid, building_uuid, person_uuid, image, entry_time))
 
             cursor.execute("""
                 UPDATE buildings 
                 SET entry = entry + 1, total = total + 1 
-                WHERE uuid = %s
+                WHERE uuid = ?
             """, (building_uuid,))
         else:
             cursor.execute("""
-                UPDATE building_persons SET person_uuid = %s WHERE uuid = %s
+                UPDATE building_persons SET person_uuid = ? WHERE uuid = ?
             """, (person_uuid, building_person_uuid))
 
         connection.commit()
@@ -141,13 +204,13 @@ def registered():
         return jsonify({'error': str(e)}), 500
 
     finally:
-        if cursor: cursor.close()
-        if connection: connection.close()
+        cursor.close()
+        connection.close()
 
 @app.route('/exit', methods=['POST'])
 def exit():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
 
     try:
         data = request.get_json()
@@ -163,16 +226,16 @@ def exit():
 
         cursor.execute("""
             UPDATE building_persons SET
-                exit_time = %s
-                WHERE uuid = %s
+                exit_time = ?
+                WHERE uuid = ?
         """, (exit_time, uuid))
 
         building_uuid = 'e1b6c9e7-4b8d-4e16-9d17-297c9816b64e'
 
         cursor.execute("""
             UPDATE buildings 
-            SET `exit` = `exit` + 1, total = total - 1 
-            WHERE uuid = %s
+            SET [exit] = [exit] + 1, total = total - 1 
+            WHERE uuid = ?
         """, (building_uuid,))
 
         connection.commit()
@@ -183,79 +246,94 @@ def exit():
         return jsonify({'error': str(e)}), 500
 
     finally:
-        if cursor: cursor.close()
-        if connection: connection.close()
+        cursor.close()
+        connection.close()
 
-# Route to get persons
-@app.route('/persons', methods=['GET'])
-def get_persons():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+@app.route('/persons/<string:person_uuid>', methods=['GET'])
+def get_person(person_uuid):
     try:
-        cursor.execute("SELECT * FROM persons")
-        persons = cursor.fetchall()
-        return jsonify(persons)
+        connection = get_db_connection()
+        cursor = connection.cursor()
+        
+        query = """
+        SELECT 
+            uuid, name, status, nik, birth_place, 
+            CONVERT(varchar, birth_date, 23) as birth_date,
+            gender, address, company, compartment, 
+            departement, email, phone,
+            bpjs, medical_checkup, skck,
+            emergency_contact_name, emergency_contact_address,
+            emergency_contact_relation, emergency_contact_phone,
+            image
+        FROM persons WHERE uuid = ?
+        """
+        cursor.execute(query, (person_uuid,))
+        columns = [column[0] for column in cursor.description]
+        person = cursor.fetchone()
+        
+        if not person:
+            return jsonify({'error': 'Person not found'}), 404
+            
+        person_dict = dict(zip(columns, person))
+        return jsonify(person_dict)
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         connection.close()
 
-# Route to create a new person with UUID
 @app.route('/persons', methods=['POST'])
 def create_person():
     data = request.form
     image = request.files.get('image')
     bpjs = request.files.get('bpjs')
-    medical_history = request.files.get('medical_history')
+    medical_checkup = request.files.get('medical_checkup')
+    skck = request.files.get('skck')
     
     try:
-        connection = db_pool.get_connection()
-        cursor = connection.cursor(dictionary=True)
+        connection = get_db_connection()
+        cursor = connection.cursor()
         
-        # Generate UUID for the new person
         person_uuid = str(uuid.uuid4())
         
-        # Handle image upload
-        image_filename = None
-
-        if image and allowed_file(image.filename):
-            filename = secure_filename(image.filename)
-            image_filename = f"{person_uuid}_{filename}"
-            image.save(os.path.join(app.config['UPLOAD_FOLDER'], image_filename))
-
-        bpjs_filename = None
-
-        if bpjs and allowed_file(bpjs.filename):
-            filename = secure_filename(bpjs.filename)
-            bpjs_filename = f"{person_uuid}_{filename}"
-            bpjs.save(os.path.join(app.config['UPLOAD_FOLDER_BPJS'], bpjs_filename))
-
-        medical_history_filename = None
-
-        if medical_history and allowed_file(medical_history.filename):
-            filename = secure_filename(medical_history.filename)
-            medical_history_filename = f"{person_uuid}_{filename}"
-            medical_history.save(os.path.join(app.config['UPLOAD_FOLDER_MEDICAL_HISTORY'], medical_history_filename))
+        # Handle file uploads
+        image_filename = handle_file_upload(image, app.config['UPLOAD_FOLDER'], person_uuid)
+        bpjs_filename = handle_file_upload(bpjs, app.config['UPLOAD_FOLDER_BPJS'], person_uuid)
+        medical_filename = handle_file_upload(medical_checkup, app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_uuid)
+        skck_filename = handle_file_upload(skck, app.config['UPLOAD_FOLDER_SKCK'], person_uuid)
         
-        # Insert new person with UUID
         query = """
-        INSERT INTO persons (uuid, name, status, departement, nik, address, contact, emergency_contact, email, image, bpjs, medical_history)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO persons (
+            uuid, name, status, nik, birth_place, birth_date, gender, 
+            address, company, compartment, departement, email, phone,
+            bpjs, medical_checkup, skck, emergency_contact_name,
+            emergency_contact_address, emergency_contact_relation,
+            emergency_contact_phone, image
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         values = (
             person_uuid,
             data.get('name'),
             data.get('status'),
-            data.get('departement'),
             data.get('nik'),
+            data.get('birth_place'),
+            data.get('birth_date'),
+            data.get('gender'),
             data.get('address'),
-            f"+62{data.get('contact')}",
-            f"+62{data.get('emergency_contact')}",
+            data.get('company'),
+            data.get('compartment'),
+            data.get('departement'),
             data.get('email'),
-            image_filename,
+            f"+62{data.get('phone')}",
             bpjs_filename,
-            medical_history_filename
+            medical_filename,
+            skck_filename,
+            data.get('emergency_contact_name'),
+            data.get('emergency_contact_address'),
+            data.get('emergency_contact_relation'),
+            f"+62{data.get('emergency_contact_phone')}",
+            image_filename
         )
         
         cursor.execute(query, values)
@@ -269,114 +347,96 @@ def create_person():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+        cursor.close()
+        connection.close()
 
-# Route to get a single person by UUID
-@app.route('/persons/<string:person_uuid>', methods=['GET'])
-def get_person(person_uuid):
-    try:
-        connection = db_pool.get_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        query = "SELECT * FROM persons WHERE uuid = %s"
-        cursor.execute(query, (person_uuid,))
-        person = cursor.fetchone()
-        
-        if not person:
-            return jsonify({'error': 'Person not found'}), 404
-            
-        return jsonify(person)
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
-
-# Route to update a person by UUID
 @app.route('/persons/<string:person_uuid>', methods=['PUT'])
 def update_person(person_uuid):
     data = request.form
     image = request.files.get('image')
     bpjs = request.files.get('bpjs')
-    medical_history = request.files.get('medical_history')
+    medical_checkup = request.files.get('medical_checkup')
+    skck = request.files.get('skck')
     
     try:
-        connection = db_pool.get_connection()
-        cursor = connection.cursor(dictionary=True)
+        connection = get_db_connection()
+        cursor = connection.cursor()
         
-        # Check if person exists
-        cursor.execute("SELECT * FROM persons WHERE uuid = %s", (person_uuid,))
+        # Get existing person data
+        cursor.execute("SELECT * FROM persons WHERE uuid = ?", (person_uuid,))
+        columns = [column[0] for column in cursor.description]
         person = cursor.fetchone()
+        
         if not person:
             return jsonify({'error': 'Person not found'}), 404
         
-        # Handle image upload if new image provided
-        image_filename = person['image']
-        if image and allowed_file(image.filename):
+        person_dict = dict(zip(columns, person))
+        
+        # Handle file uploads
+        image_filename = person_dict['image']
+        if image:
             # Delete old image if exists
-            if person['image']:
-                old_image_path = os.path.join(app.config['UPLOAD_FOLDER'], person['image'])
-                if os.path.exists(old_image_path):
-                    os.remove(old_image_path)
-            
-            # Save new image with UUID prefix
-            filename = secure_filename(image.filename)
-            image_filename = f"{person_uuid}_{filename}"
-            image.save(os.path.join(app.config['UPLOAD_FOLDER'], image_filename))
+            if person_dict['image']:
+                old_path = os.path.join(app.config['UPLOAD_FOLDER'], person_dict['image'])
+                delete_file(old_path)
+            image_filename = handle_file_upload(image, app.config['UPLOAD_FOLDER'], person_uuid)
 
-        # Handle file upload if new bpjs provided
-        bpjs_filename = person['bpjs']
-        if bpjs and allowed_file(bpjs.filename):
-            # Delete old bpjs if exists
-            if person['bpjs']:
-                old_bpjs_path = os.path.join(app.config['UPLOAD_FOLDER_BPJS'], person['bpjs'])
-                if os.path.exists(old_bpjs_path):
-                    os.remove(old_bpjs_path)
-            
-            # Save new bpjs with UUID prefix
-            filename = secure_filename(bpjs.filename)
-            bpjs_filename = f"{person_uuid}_{filename}"
-            bpjs.save(os.path.join(app.config['UPLOAD_FOLDER_BPJS'], bpjs_filename))
+        bpjs_filename = person_dict['bpjs']
+        if bpjs:
+            if person_dict['bpjs']:
+                old_path = os.path.join(app.config['UPLOAD_FOLDER_BPJS'], person_dict['bpjs'])
+                delete_file(old_path)
+            bpjs_filename = handle_file_upload(bpjs, app.config['UPLOAD_FOLDER_BPJS'], person_uuid)
 
-        # Handle file upload if new medical_history provided
-        medical_history_filename = person['medical_history']
-        if medical_history and allowed_file(medical_history.filename):
-            # Delete old medical_history if exists
-            if person['medical_history']:
-                old_medical_history_path = os.path.join(app.config['UPLOAD_FOLDER_MEDICAL_HISTORY'], person['medical_history'])
-                if os.path.exists(old_medical_history_path):
-                    os.remove(old_medical_history_path)
-            
-            # Save new medical_history with UUID prefix
-            filename = secure_filename(medical_history.filename)
-            medical_history_filename = f"{person_uuid}_{filename}"
-            medical_history.save(os.path.join(app.config['UPLOAD_FOLDER_MEDICAL_HISTORY'], medical_history_filename))
+        medical_filename = person_dict['medical_checkup']
+        if medical_checkup:
+            if person_dict['medical_checkup']:
+                old_path = os.path.join(app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_dict['medical_checkup'])
+                delete_file(old_path)
+            medical_filename = handle_file_upload(medical_checkup, app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_uuid)
+
+        skck_filename = person_dict['skck']
+        if skck:
+            if person_dict['skck']:
+                old_path = os.path.join(app.config['UPLOAD_FOLDER_SKCK'], person_dict['skck'])
+                delete_file(old_path)
+            skck_filename = handle_file_upload(skck, app.config['UPLOAD_FOLDER_SKCK'], person_uuid)
         
         # Update person
         query = """
         UPDATE persons 
-        SET name = %s, status = %s, departement = %s, nik = %s, address = %s, contact = %s, 
-            emergency_contact = %s, email = %s, image = %s, bpjs = %s, medical_history = %s
-        WHERE uuid = %s
+        SET 
+            name = ?, status = ?, nik = ?, birth_place = ?, 
+            birth_date = ?, gender = ?, address = ?,
+            company = ?, compartment = ?, departement = ?,
+            email = ?, phone = ?, bpjs = ?,
+            medical_checkup = ?, skck = ?,
+            emergency_contact_name = ?, emergency_contact_address = ?,
+            emergency_contact_relation = ?, emergency_contact_phone = ?,
+            image = ?
+        WHERE uuid = ?
         """
         values = (
-            data.get('name', person['name']),
-            data.get('status', person['status']),
-            data.get('departement', person['departement']),
-            data.get('nik', person['nik']),
-            data.get('address', person['address']),
-            data.get('contact', f"+62{person['contact']}"),
-            data.get('emergency_contact', f"+62{person['emergency_contact']}"),
-            data.get('email', person['email']),
-            image_filename,
+            data.get('name', person_dict['name']),
+            data.get('status', person_dict['status']),
+            data.get('nik', person_dict['nik']),
+            data.get('birth_place', person_dict['birth_place']),
+            data.get('birth_date', person_dict['birth_date']),
+            data.get('gender', person_dict['gender']),
+            data.get('address', person_dict['address']),
+            data.get('company', person_dict['company']),
+            data.get('compartment', person_dict['compartment']),
+            data.get('departement', person_dict['departement']),
+            data.get('email', person_dict['email']),
+            f"+62{data.get('phone', person_dict['phone'][3:])}",  # Remove +62 if present
             bpjs_filename,
-            medical_history_filename,
+            medical_filename,
+            skck_filename,
+            data.get('emergency_contact_name', person_dict['emergency_contact_name']),
+            data.get('emergency_contact_address', person_dict['emergency_contact_address']),
+            data.get('emergency_contact_relation', person_dict['emergency_contact_relation']),
+            f"+62{data.get('emergency_contact_phone', person_dict['emergency_contact_phone'][3:])}",
+            image_filename,
             person_uuid
         )
         
@@ -388,32 +448,37 @@ def update_person(person_uuid):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+        cursor.close()
+        connection.close()
 
-# Route to delete a person by UUID
 @app.route('/persons/<string:person_uuid>', methods=['DELETE'])
 def delete_person(person_uuid):
     try:
-        connection = db_pool.get_connection()
-        cursor = connection.cursor(dictionary=True)
+        connection = get_db_connection()
+        cursor = connection.cursor()
         
-        # First get person to delete their image
-        cursor.execute("SELECT * FROM persons WHERE uuid = %s", (person_uuid,))
+        # Get person data first to delete associated files
+        cursor.execute("SELECT * FROM persons WHERE uuid = ?", (person_uuid,))
+        columns = [column[0] for column in cursor.description]
         person = cursor.fetchone()
+        
         if not person:
             return jsonify({'error': 'Person not found'}), 404
         
-        # Delete image file if exists
-        if person['image']:
-            image_path = os.path.join(app.config['UPLOAD_FOLDER'], person['image'])
-            if os.path.exists(image_path):
-                os.remove(image_path)
+        person_dict = dict(zip(columns, person))
         
-        # Delete person from database
-        cursor.execute("DELETE FROM persons WHERE uuid = %s", (person_uuid,))
+        # Delete all associated files
+        if person_dict['image']:
+            delete_file(os.path.join(app.config['UPLOAD_FOLDER'], person_dict['image']))
+        if person_dict['bpjs']:
+            delete_file(os.path.join(app.config['UPLOAD_FOLDER_BPJS'], person_dict['bpjs']))
+        if person_dict['medical_checkup']:
+            delete_file(os.path.join(app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_dict['medical_checkup']))
+        if person_dict['skck']:
+            delete_file(os.path.join(app.config['UPLOAD_FOLDER_SKCK'], person_dict['skck']))
+        
+        # Delete from database
+        cursor.execute("DELETE FROM persons WHERE uuid = ?", (person_uuid,))
         connection.commit()
         
         return jsonify({'message': 'Person deleted successfully!'})
@@ -421,46 +486,51 @@ def delete_person(person_uuid):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+        cursor.close()
+        connection.close()
 
-# Route to get persons paginate
 @app.route('/persons-paginate', methods=['GET'])
 def get_persons_paginate():
     page = int(request.args.get('page', 1))
     limit = int(request.args.get('limit', 5))
     offset = (page - 1) * limit
-    search = request.args.get('search')
+    search = request.args.get('search', '')
 
-    connection = db_pool.get_connection()
-    cursor = None  # Initialize cursor to avoid UnboundLocalError
+    connection = get_db_connection()
+    cursor = None
 
     try:
         # Build base query
-        base_query = "SELECT * FROM persons"
-        params = []
-
-        if search:
-            base_query += " AND persons.name LIKE %s"
-            params.append(f"%{search}%")
-        base_query += " ORDER BY name ASC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(base_query, params)
-        persons = cursor.fetchall()
-
-        # Count total (with search if provided)
+        base_query = """
+        SELECT 
+            uuid, name, status, nik, 
+            CONVERT(varchar, birth_date, 23) as birth_date,
+            gender, address, phone, 
+            emergency_contact_name, emergency_contact_phone,
+            image
+        FROM persons
+        """
         count_query = "SELECT COUNT(*) AS total FROM persons"
+        params = []
         count_params = []
-        if search:
-            count_query += " AND persons.name LIKE %s"
-            count_params.append(f"%{search}%")
 
+        if search:
+            base_query += " WHERE name LIKE ? OR nik LIKE ?"
+            params.extend([f"%{search}%", f"%{search}%"])
+            count_query += " WHERE name LIKE ? OR nik LIKE ?"
+            count_params.extend([f"%{search}%", f"%{search}%"])
+
+        base_query += " ORDER BY name ASC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        params.extend([offset, limit])
+
+        cursor = connection.cursor()
+        cursor.execute(base_query, params)
+        columns = [column[0] for column in cursor.description]
+        persons = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        # Get total count
         cursor.execute(count_query, count_params)
-        total = cursor.fetchone()['total']
+        total = cursor.fetchone()[0]
 
         return jsonify({
             'data': persons,
@@ -479,11 +549,12 @@ def get_persons_paginate():
 # Route to get buildings
 @app.route('/buildings', methods=['GET'])
 def get_buildings():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
     try:
         cursor.execute("SELECT * FROM buildings")
-        buildings = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        buildings = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(buildings)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -494,18 +565,19 @@ def get_buildings():
 # Route to get buildings detail
 @app.route('/buildings-detail', methods=['GET'])
 def get_buildings_detail():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
     try:
         uuid = request.args.get('uuid')
         if not uuid:
             return jsonify({'error': 'UUID parameter is required'}), 400
 
-        cursor.execute("SELECT * FROM buildings WHERE uuid = %s LIMIT 1", (uuid,))
+        cursor.execute("SELECT * FROM buildings WHERE uuid = ?", (uuid,))
+        columns = [column[0] for column in cursor.description]
         building = cursor.fetchone()
 
         if building:
-            return jsonify(building)
+            return jsonify(dict(zip(columns, building)))
         else:
             return jsonify({'error': 'Building not found'}), 404
     except Exception as e:
@@ -517,8 +589,8 @@ def get_buildings_detail():
 # Route to building persons not today
 @app.route('/building-persons-not-today', methods=['GET'])
 def get_building_persons_not_today():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
     try:
         building_uuid = request.args.get('building_uuid')
 
@@ -531,14 +603,15 @@ def get_building_persons_not_today():
             WHERE uuid NOT IN (
                 SELECT person_uuid
                 FROM building_persons
-                WHERE DATE(entry_time) = CURDATE() AND
+                WHERE CONVERT(DATE, entry_time) = CONVERT(DATE, GETDATE()) AND
                 exit_time IS NULL AND
                 person_uuid IS NOT NULL AND
-                building_uuid = %s
+                building_uuid = ?
             )
         """, (building_uuid,))
 
-        building_persons_not_today = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        building_persons_not_today = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         return jsonify(building_persons_not_today)
     except Exception as e:
@@ -550,8 +623,8 @@ def get_building_persons_not_today():
 # Route to get building persons today
 @app.route('/building-persons-today', methods=['GET'])
 def get_building_persons_today():
-    connection = db_pool.get_connection()
-    cursor = connection.cursor(dictionary=True)
+    connection = get_db_connection()
+    cursor = connection.cursor()
     try:
         building_uuid = request.args.get('building_uuid')
 
@@ -562,12 +635,13 @@ def get_building_persons_today():
                 persons.image
             FROM building_persons
             INNER JOIN persons ON persons.uuid = building_persons.person_uuid
-            WHERE DATE(entry_time) = CURDATE() AND 
+            WHERE CONVERT(DATE, entry_time) = CONVERT(DATE, GETDATE()) AND 
             exit_time IS NULL AND
-            building_uuid = %s
+            building_uuid = ?
         """, (building_uuid,))
 
-        building_persons_today = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        building_persons_today = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         return jsonify(building_persons_today)
     except Exception as e:
@@ -588,57 +662,54 @@ def get_building_persons():
     if not building_uuid:
         return jsonify({'error': 'building_uuid is required'}), 400
 
-    connection = db_pool.get_connection()
+    connection = get_db_connection()
     try:
         # Build base query
         base_query = """
             SELECT 
                 building_persons.uuid,
                 building_persons.image,
+                persons.*,
                 persons.uuid AS person_uuid,
                 persons.image AS person_image,
-                persons.name AS person_name,
-                persons.nik AS person_nik,
-                persons.address AS person_address,
-                persons.emergency_contact AS person_emergency_contact,
-                persons.email AS person_email,
                 entry_time,
                 exit_time
             FROM building_persons 
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
-            WHERE building_uuid = %s AND
-            DATE(entry_time) = CURDATE() AND
+            WHERE building_uuid = ? AND
+            CONVERT(DATE, entry_time) = CONVERT(DATE, GETDATE()) AND
             exit_time IS NULL
         """
 
         # Add search if provided
         params = [building_uuid]
         if search:
-            base_query += " AND persons.name LIKE %s"
+            base_query += " AND persons.name LIKE ?"
             params.append(f"%{search}%")
-        base_query += " ORDER BY entry_time DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
+        base_query += " ORDER BY entry_time DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        params.extend([offset, limit])
 
-        cursor = connection.cursor(dictionary=True)
+        cursor = connection.cursor()
         cursor.execute(base_query, params)
-        building_persons = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        building_persons = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         # Count total (with search if provided)
         count_query = """
             SELECT COUNT(*) AS total
             FROM building_persons
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
-            WHERE building_uuid = %s AND
-            DATE(entry_time) = CURDATE() AND
+            WHERE building_uuid = ? AND
+            CONVERT(DATE, entry_time) = CONVERT(DATE, GETDATE()) AND
             exit_time IS NULL
         """
         count_params = [building_uuid]
         if search:
-            count_query += " AND persons.name LIKE %s"
+            count_query += " AND persons.name LIKE ?"
             count_params.append(f"%{search}%")
 
         cursor.execute(count_query, count_params)
-        total = cursor.fetchone()['total']
+        total = cursor.fetchone()[0]
 
         return jsonify({
             'data': building_persons,
@@ -661,7 +732,7 @@ def get_building_persons_history():
     offset = (page - 1) * limit
     search = request.args.get('search')
 
-    connection = db_pool.get_connection()
+    connection = get_db_connection()
     try:
         # Build base query
         base_query = """
@@ -669,13 +740,9 @@ def get_building_persons_history():
                 building_persons.uuid,
                 building_persons.image,
                 buildings.name AS building_name,
+                persons.*,
                 persons.uuid AS person_uuid,
                 persons.image AS person_image,
-                persons.name AS person_name,
-                persons.nik AS person_nik,
-                persons.address AS person_address,
-                persons.emergency_contact AS person_emergency_contact,
-                persons.email AS person_email,
                 entry_time,
                 exit_time
             FROM building_persons 
@@ -686,14 +753,15 @@ def get_building_persons_history():
         # Add search if provided
         params = []
         if search:
-            base_query += " WHERE persons.name LIKE %s"
+            base_query += " WHERE persons.name LIKE ?"
             params.append(f"%{search}%")
-        base_query += " ORDER BY entry_time DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
+        base_query += " ORDER BY entry_time DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        params.extend([offset, limit])
 
-        cursor = connection.cursor(dictionary=True)
+        cursor = connection.cursor()
         cursor.execute(base_query, params)
-        building_persons_history = cursor.fetchall()
+        columns = [column[0] for column in cursor.description]
+        building_persons_history = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         # Count total (with search if provided)
         count_query = """
@@ -704,11 +772,11 @@ def get_building_persons_history():
         """
         count_params = []
         if search:
-            count_query += " WHERE AND persons.name LIKE %s"
+            count_query += " WHERE persons.name LIKE ?"
             count_params.append(f"%{search}%")
 
         cursor.execute(count_query, count_params)
-        total = cursor.fetchone()['total']
+        total = cursor.fetchone()[0]
 
         return jsonify({
             'data': building_persons_history,
@@ -735,17 +803,19 @@ def count_gate():
         'undefined': 0
     }
 
-    connection = db_pool.get_connection()
+    connection = get_db_connection()
     try:
         # Get gate info (Gerbang)
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM buildings WHERE name = 'Gerbang' LIMIT 1")
+        cursor = connection.cursor()
+        cursor.execute("SELECT * FROM buildings WHERE name = 'Gerbang'")
+        columns = [column[0] for column in cursor.description]
         gate = cursor.fetchone()
 
         if gate:
-            count['total'] = gate['total']
-            count['entry'] = gate['entry']
-            count['exit'] = gate['exit']
+            gate_dict = dict(zip(columns, gate))
+            count['total'] = gate_dict['total']
+            count['entry'] = gate_dict['entry']
+            count['exit'] = gate_dict['exit']
 
         # Get the registered count
         cursor.execute("""
@@ -755,7 +825,7 @@ def count_gate():
         """)
         result = cursor.fetchone()
         if result:
-            count['registered'] = result['registered']
+            count['registered'] = result[0]
 
         # Get the undefined count
         cursor.execute("""
@@ -765,7 +835,7 @@ def count_gate():
         """)
         result = cursor.fetchone()
         if result:
-            count['undefined'] = result['undefined']
+            count['undefined'] = result[0]
 
         return jsonify(count)
     except Exception as e:
