@@ -1,6 +1,7 @@
 import uuid
 import os
 import pyodbc
+import argparse
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -842,4 +843,10 @@ def count_gate():
         connection.close()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Run the Flask application')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to run the application on')
+    parser.add_argument('--port', type=int, default=5000, help='Port to run the application on')
+    args = parser.parse_args()
+    
+    app.run(host=args.host, port=args.port, debug=True)
