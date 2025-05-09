@@ -28,7 +28,7 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['UPLOAD_FOLDER_BPJS'] = UPLOAD_FOLDER_BPJS
 app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'] = UPLOAD_FOLDER_MEDICAL_CHECKUP
-app.config['UPLOAD_FOLDER_SKCK'] = 'path/to/skck_uploads'
+app.config['UPLOAD_FOLDER_SKCK'] = UPLOAD_FOLDER_SKCK
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 def allowed_file(filename):
@@ -503,11 +503,8 @@ def get_persons_paginate():
         # Build base query
         base_query = """
         SELECT 
-            uuid, name, status, nik, 
-            CONVERT(varchar, birth_date, 23) as birth_date,
-            gender, address, phone, 
-            emergency_contact_name, emergency_contact_phone,
-            image
+            *,
+            CONVERT(varchar, birth_date, 23) as birth_date
         FROM persons
         """
         count_query = "SELECT COUNT(*) AS total FROM persons"
