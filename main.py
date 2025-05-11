@@ -150,7 +150,6 @@ def verify_token(token):
             conn.close()
 
 @app.route('/login', methods=['POST'])
-@token_required
 def login():
     data = request.get_json()
     username = data.get('username')
@@ -1053,47 +1052,6 @@ def verify_token(token):
         if 'conn' in locals():
             conn.close()
 
-@app.route('/login', methods=['POST'])
-@token_required
-def login():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    
-    if not username or not password:
-        return jsonify({'error': 'Username and password are required'}), 400
-    
-    hashed_password = hash_password(password)
-    
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT uuid, password FROM [user] WHERE username = ?", (username,))
-        user = cursor.fetchone()
-        
-        if not user or user.password != hashed_password:
-            return jsonify({'error': 'Invalid username or password'}), 401
-        
-        # Generate new token
-        token = generate_token()
-        token_expires = datetime.now() + timedelta(days=1)
-        
-        cursor.execute("UPDATE [user] SET token = ?, token_expires = ? WHERE uuid = ?", 
-                        (token, token_expires, user.uuid))
-        conn.commit()
-        
-        return jsonify({
-            'message': 'Login successful',
-            'token': token,
-            'uuid': user.uuid
-        }), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
 @app.route('/protected', methods=['GET'])
 @token_required
