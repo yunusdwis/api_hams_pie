@@ -877,6 +877,8 @@ def get_building_persons_history():
     limit = int(request.args.get('limit', 5))
     offset = (page - 1) * limit
     search = request.args.get('search')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
 
     connection = get_db_connection()
     try:
@@ -884,7 +886,7 @@ def get_building_persons_history():
         base_query = """
             SELECT 
                 building_persons.uuid,
-                building_persons.image,
+                building_persons.image AS building_person_image,
                 buildings.name AS building_name,
                 persons.*,
                 persons.uuid AS person_uuid,
@@ -896,11 +898,33 @@ def get_building_persons_history():
             INNER JOIN buildings ON buildings.uuid = building_persons.building_uuid
         """
 
-        # Add search if provided
+        # Add conditions based on parameters
+        conditions = []
         params = []
+        count_params = []
+
         if search:
-            base_query += " WHERE persons.name LIKE ?"
+            conditions.append("persons.name LIKE ?")
             params.append(f"%{search}%")
+            count_params.append(f"%{search}%")
+
+        if start_date and end_date:
+            conditions.append("CONVERT(DATE, entry_time) BETWEEN ? AND ?")
+            params.extend([start_date, end_date])
+            count_params.extend([start_date, end_date])
+        elif start_date:
+            conditions.append("CONVERT(DATE, entry_time) >= ?")
+            params.append(start_date)
+            count_params.append(start_date)
+        elif end_date:
+            conditions.append("CONVERT(DATE, entry_time) <= ?")
+            params.append(end_date)
+            count_params.append(end_date)
+
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        # Add pagination
         base_query += " ORDER BY entry_time DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
         params.extend([offset, limit])
 
@@ -909,17 +933,15 @@ def get_building_persons_history():
         columns = [column[0] for column in cursor.description]
         building_persons_history = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-        # Count total (with search if provided)
+        # Count total (with same conditions)
         count_query = """
             SELECT COUNT(*) AS total
             FROM building_persons
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
             INNER JOIN buildings ON buildings.uuid = building_persons.building_uuid
         """
-        count_params = []
-        if search:
-            count_query += " WHERE persons.name LIKE ?"
-            count_params.append(f"%{search}%")
+        if conditions:
+            count_query += " WHERE " + " AND ".join(conditions)
 
         cursor.execute(count_query, count_params)
         total = cursor.fetchone()[0]
