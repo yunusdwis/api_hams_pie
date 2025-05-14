@@ -2,7 +2,7 @@ import uuid
 import os
 import pyodbc
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -27,7 +27,7 @@ UPLOAD_FOLDER = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\people
 UPLOAD_FOLDER_BPJS = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\bpjs'
 UPLOAD_FOLDER_MEDICAL_CHECKUP = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\medical_checkup'
 UPLOAD_FOLDER_SKCK = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\skck'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'doc', 'docx'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['UPLOAD_FOLDER_BPJS'] = UPLOAD_FOLDER_BPJS
@@ -35,41 +35,6 @@ app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'] = UPLOAD_FOLDER_MEDICAL_CHECKUP
 app.config['UPLOAD_FOLDER_SKCK'] = UPLOAD_FOLDER_SKCK
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-import uuid
-import os
-import pyodbc
-import argparse
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from werkzeug.utils import secure_filename
-import hashlib
-import secrets
-
-app = Flask(__name__)
-CORS(app)
-
-# SQL Server connection configuration
-SERVER = 'localhost\SQLEXPRESS'
-DATABASE = 'system_hams_pie'
-USERNAME = 'sa'
-PASSWORD = 'sa123'
-DRIVER = '{ODBC Driver 17 for SQL Server}'
-
-# Connection string for SQL Server
-connection_string = f'DRIVER={DRIVER};SERVER={SERVER};DATABASE={DATABASE};UID={USERNAME};PWD={PASSWORD}'
-
-UPLOAD_FOLDER = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\people'
-UPLOAD_FOLDER_BPJS = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\bpjs'
-UPLOAD_FOLDER_MEDICAL_CHECKUP = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\medical_checkup'
-UPLOAD_FOLDER_SKCK = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\skck'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['UPLOAD_FOLDER_BPJS'] = UPLOAD_FOLDER_BPJS
-app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'] = UPLOAD_FOLDER_MEDICAL_CHECKUP
-app.config['UPLOAD_FOLDER_SKCK'] = UPLOAD_FOLDER_SKCK
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -132,15 +97,13 @@ def verify_token(token):
             token = token[7:]
         
         cursor.execute("""
-            SELECT uuid, token_expires 
+            SELECT uuid 
             FROM [user] 
             WHERE token = ?
         """, (token,))
         user = cursor.fetchone()
         
-        if user and user.token_expires and user.token_expires > datetime.now():
-            return user.uuid
-        return None
+        return user.uuid
         
     except Exception as e:
         print(f"Token verification error: {e}")
@@ -164,20 +127,25 @@ def login():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT uuid, password FROM [user] WHERE username = ?", (username,))
+        cursor.execute("SELECT uuid, password, token FROM [user] WHERE username = ?", (username,))
         user = cursor.fetchone()
         
         if not user or user.password != hashed_password:
             return jsonify({'error': 'Invalid username or password'}), 401
+
+        token = user.token
         
-        # Generate new token
-        token = generate_token()
-        token_expires = datetime.now() + timedelta(days=1)
-        
-        cursor.execute("UPDATE [user] SET token = ?, token_expires = ? WHERE uuid = ?", 
-                        (token, token_expires, user.uuid))
-        conn.commit()
-        
+        if user.token is None:
+            # Generate new token
+            token = generate_token()
+
+            cursor.execute(
+                "UPDATE [user] SET token = ? WHERE uuid = ?",
+                (token, user.uuid)
+            )
+            conn.commit()
+
+
         return jsonify({
             'message': 'Login successful',
             'token': token,
@@ -202,32 +170,18 @@ def unregistered():
     cursor = connection.cursor()
 
     try:
+        person_uuid = str(uuid.uuid4())
         # Handle file uploads
-        bpjs_file = request.files.get('bpjs')
-        medical_file = request.files.get('medical_checkup')
-        skck_file = request.files.get('skck')
+        bpjs = request.files.get('bpjs')
+        medical_checkup = request.files.get('medical_checkup')
+        skck = request.files.get('skck')
 
-        # Process file uploads
-        bpjs_path = None
-        medical_path = None
-        skck_path = None
-
-        if bpjs_file and bpjs_file.filename != '' and allowed_file(bpjs_file.filename):
-            filename = secure_filename(f"{uuid.uuid4().hex}_{bpjs_file.filename}")
-            bpjs_path = os.path.join(UPLOAD_FOLDER_BPJS, filename)
-            bpjs_file.save(bpjs_path)
-
-        if medical_file and medical_file.filename != '' and allowed_file(medical_file.filename):
-            filename = secure_filename(f"{uuid.uuid4().hex}_{medical_file.filename}")
-            medical_path = os.path.join(UPLOAD_FOLDER_MEDICAL_CHECKUP, filename)
-            medical_file.save(medical_path)
-
-        if skck_file and skck_file.filename != '' and allowed_file(skck_file.filename):
-            filename = secure_filename(f"{uuid.uuid4().hex}_{skck_file.filename}")
-            skck_path = os.path.join(UPLOAD_FOLDER_SKCK, filename)
-            skck_file.save(skck_path)
+        bpjs_filename = handle_file_upload(bpjs, app.config['UPLOAD_FOLDER_BPJS'], person_uuid)
+        medical_filename = handle_file_upload(medical_checkup, app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_uuid)
+        skck_filename = handle_file_upload(skck, app.config['UPLOAD_FOLDER_SKCK'], person_uuid)
 
         # Get form data
+        image = request.form.get('image')
         name = request.form.get('name')
         nik = request.form.get('nik')
         email = request.form.get('email')
@@ -245,22 +199,19 @@ def unregistered():
         building_uuid = request.form.get('building_uuid')
         insert = request.form.get('insert')
 
-
-        person_uuid = str(uuid.uuid4())
-
         # Insert person data
         cursor.execute("""
-            INSERT INTO persons (uuid, name, nik, email, address, 
+            INSERT INTO persons (uuid, image, name, nik, email, address, 
                             emergency_contact_name, emergency_contact_address,
                             emergency_contact_relation, emergency_contact_phone,
                             birth_place, birth_date, gender, phone,
                             bpjs, medical_checkup, skck)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (person_uuid, name, nik, email, address,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (person_uuid, image, name, nik, email, address,
             emergency_contact_name, emergency_contact_address,
             emergency_contact_relation, f"+62{emergency_contact_phone}",
             birth_place, birth_date, gender, f"+62{phone}",
-            bpjs_path, medical_path, skck_path))
+            bpjs_filename, medical_filename, skck_filename))
 
         if insert == '1':
             building_person_uuid = str(uuid.uuid4())
@@ -279,8 +230,6 @@ def unregistered():
             """, (building_uuid,))
         else:
             building_person_uuid = request.form.get('building_person_uuid')
-            print(building_person_uuid)
-            print(person_uuid)
             cursor.execute("""
                 UPDATE building_persons SET person_uuid = ? WHERE uuid = ?
             """, (person_uuid, building_person_uuid))
@@ -792,7 +741,7 @@ def get_building_persons_today():
 
         cursor.execute("""
             SELECT 
-                building_persons.uuid, 
+                building_persons.uuid AS building_person_uuid, 
                 persons.name, 
                 persons.image
             FROM building_persons
@@ -830,11 +779,14 @@ def get_building_persons():
         # Build base query
         base_query = """
             SELECT 
-                building_persons.uuid,
-                building_persons.image,
+                building_persons.uuid AS building_person_uuid,
+                building_persons.building_uuid AS building_person_building_uuid,
+                building_persons.person_uuid AS building_person_person_uuid,
+                building_persons.image AS building_person_image,
                 persons.*,
                 persons.uuid AS person_uuid,
                 persons.image AS person_image,
+                persons.name AS person_name,
                 entry_time,
                 exit_time
             FROM building_persons 
@@ -978,6 +930,84 @@ def get_building_persons_history():
         cursor.close()
         connection.close()
 
+@app.route('/weekly-counts', methods=['GET'])
+@token_required
+def get_weekly_counts():
+    try:
+        building_uuid = request.args.get('building_uuid')
+
+        # Get current week's Monday and Sunday
+        today = datetime.now()
+        start_of_week = today - timedelta(days=today.weekday())
+        end_of_week = start_of_week + timedelta(days=6)
+
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        # Common WHERE clause
+        where_clause = """
+        WHERE entry_time BETWEEN ? AND ?
+        {building_condition}
+        """.format(
+            building_condition="AND building_uuid = ?" if building_uuid else ""
+        )
+
+        params = [start_of_week, end_of_week]
+        if building_uuid:
+            params.append(building_uuid)
+
+        # Entry count query
+        entry_query = f"""
+        SELECT DATENAME(WEEKDAY, entry_time) AS weekday, COUNT(*) AS count
+        FROM building_persons
+        {where_clause}
+        GROUP BY DATENAME(WEEKDAY, entry_time)
+        """
+
+        # Exit count query
+        exit_query = f"""
+        SELECT DATENAME(WEEKDAY, exit_time) AS weekday, COUNT(*) AS count
+        FROM building_persons
+        WHERE exit_time BETWEEN ? AND ?
+        {("AND building_uuid = ?" if building_uuid else "")}
+        GROUP BY DATENAME(WEEKDAY, exit_time)
+        """
+
+        # Execute entry query
+        cursor.execute(entry_query, params)
+        entry_results = cursor.fetchall()
+
+        # Execute exit query
+        cursor.execute(exit_query, params)
+        exit_results = cursor.fetchall()
+
+        weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        entry_counts = {day: 0 for day in weekday_order}
+        exit_counts = {day: 0 for day in weekday_order}
+
+        for row in entry_results:
+            entry_counts[row.weekday] = row.count
+
+        for row in exit_results:
+            exit_counts[row.weekday] = row.count
+
+        response_data = {
+            'week_start': start_of_week.strftime('%Y-%m-%d'),
+            'week_end': end_of_week.strftime('%Y-%m-%d'),
+            'entry': [entry_counts[day] for day in weekday_order],
+            'exit':  [exit_counts[day] for day in weekday_order]
+        }
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'connection' in locals():
+            connection.close()
+
 
 # Route to count gate info
 @app.route('/count-gate', methods=['GET'])
@@ -993,8 +1023,15 @@ def count_gate():
 
     connection = get_db_connection()
     try:
-        # Get gate info (Gerbang)
         cursor = connection.cursor()
+
+        # Reset counters if current time is between 23:59:50 and 23:59:59
+        now = datetime.now().time()
+        if time(23, 59, 50) <= now <= time(23, 59, 59):
+            cursor.execute("UPDATE [buildings] SET [entry] = 0, [exit] = 0, [total] = 0")
+            connection.commit()
+
+        # Get gate info (Gerbang)
         cursor.execute("SELECT * FROM buildings WHERE name = 'Gerbang'")
         columns = [column[0] for column in cursor.description]
         gate = cursor.fetchone()
@@ -1033,19 +1070,6 @@ def count_gate():
     finally:
         cursor.close()
         connection.close()
-
-@app.route('/protected', methods=['GET'])
-@token_required
-def protected_route():
-    token = request.headers.get('Authorization')
-    if not token:
-        return jsonify({'error': 'Authorization token is missing'}), 401
-    
-    user_uuid = verify_token(token)
-    if not user_uuid:
-        return jsonify({'error': 'Invalid or expired token'}), 401
-    
-    return jsonify({'message': 'Access granted', 'user_uuid': user_uuid}), 200
 
 if __name__ == '__main__':
     # Set up argument parser
