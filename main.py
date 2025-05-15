@@ -936,10 +936,9 @@ def get_weekly_counts():
     try:
         building_uuid = request.args.get('building_uuid')
 
-        # Get current week's Monday and Sunday
-        today = datetime.now()
-        start_of_week = today - timedelta(days=today.weekday())
-        end_of_week = start_of_week + timedelta(days=6)
+        # Get the last 7 days (including today)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=6)
 
         connection = get_db_connection()
         cursor = connection.cursor()
@@ -952,25 +951,25 @@ def get_weekly_counts():
             building_condition="AND building_uuid = ?" if building_uuid else ""
         )
 
-        params = [start_of_week, end_of_week]
+        params = [start_date, end_date]
         if building_uuid:
             params.append(building_uuid)
 
         # Entry count query
         entry_query = f"""
-        SELECT DATENAME(WEEKDAY, entry_time) AS weekday, COUNT(*) AS count
+        SELECT CAST(entry_time AS DATE) AS date, COUNT(*) AS count
         FROM building_persons
         {where_clause}
-        GROUP BY DATENAME(WEEKDAY, entry_time)
+        GROUP BY CAST(entry_time AS DATE)
         """
 
         # Exit count query
         exit_query = f"""
-        SELECT DATENAME(WEEKDAY, exit_time) AS weekday, COUNT(*) AS count
+        SELECT CAST(exit_time AS DATE) AS date, COUNT(*) AS count
         FROM building_persons
         WHERE exit_time BETWEEN ? AND ?
         {("AND building_uuid = ?" if building_uuid else "")}
-        GROUP BY DATENAME(WEEKDAY, exit_time)
+        GROUP BY CAST(exit_time AS DATE)
         """
 
         # Execute entry query
@@ -981,21 +980,29 @@ def get_weekly_counts():
         cursor.execute(exit_query, params)
         exit_results = cursor.fetchall()
 
-        weekday_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        entry_counts = {day: 0 for day in weekday_order}
-        exit_counts = {day: 0 for day in weekday_order}
+        # Generate all dates in the range
+        date_range = [start_date + timedelta(days=x) for x in range(7)]
+        date_strings = [date.strftime('%Y-%m-%d') for date in date_range]
+        weekday_names = [date.strftime('%A') for date in date_range]
 
+        # Initialize counts with 0
+        entry_counts = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
+        exit_counts = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
+
+        # Populate counts from query results
         for row in entry_results:
-            entry_counts[row.weekday] = row.count
+            entry_counts[str(row.date)] = row.count
 
         for row in exit_results:
-            exit_counts[row.weekday] = row.count
+            exit_counts[str(row.date)] = row.count
 
         response_data = {
-            'week_start': start_of_week.strftime('%Y-%m-%d'),
-            'week_end': end_of_week.strftime('%Y-%m-%d'),
-            'entry': [entry_counts[day] for day in weekday_order],
-            'exit':  [exit_counts[day] for day in weekday_order]
+            'start_date': start_date.strftime('%Y-%m-%d'),
+            'end_date': end_date.strftime('%Y-%m-%d'),
+            'dates': date_strings,
+            'weekdays': weekday_names,
+            'entry': [entry_counts[date] for date in date_strings],
+            'exit': [exit_counts[date] for date in date_strings]
         }
 
         return jsonify(response_data)
@@ -1007,8 +1014,6 @@ def get_weekly_counts():
             cursor.close()
         if 'connection' in locals():
             connection.close()
-
-
 # Route to count gate info
 @app.route('/count-gate', methods=['GET'])
 @token_required
