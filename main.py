@@ -262,9 +262,6 @@ def registered():
         building_person_uuid = data.get('building_person_uuid')
         insert = data.get('insert')
 
-        if not all([person_uuid]):
-            return jsonify({'error': 'All fields are required'}), 400
-
         if insert == 1:
             building_person_uuid = str(uuid.uuid4())
             entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -322,7 +319,7 @@ def exit():
 
         cursor.execute("""
             UPDATE buildings 
-            SET [exit] = [exit] + 1, total = total - 1 
+            SET [exit] = [exit] + 1, total = CASE WHEN total > 0 THEN total - 1 ELSE 0 END
             WHERE uuid = ?
         """, (building_uuid,))
 
@@ -537,14 +534,14 @@ def update_person(person_uuid):
             data.get('compartment', person_dict['compartment']),
             data.get('departement', person_dict['departement']),
             data.get('email', person_dict['email']),
-            f"+62{data.get('phone', person_dict['phone'][3:])}",  # Remove +62 if present
+            f"+62{data.get('phone')}",
             bpjs_filename,
             medical_filename,
             skck_filename,
             data.get('emergency_contact_name', person_dict['emergency_contact_name']),
             data.get('emergency_contact_address', person_dict['emergency_contact_address']),
             data.get('emergency_contact_relation', person_dict['emergency_contact_relation']),
-            f"+62{data.get('emergency_contact_phone', person_dict['emergency_contact_phone'][3:])}",
+            f"+62{data.get('emergency_contact_phone')}",
             image_filename,
             person_uuid
         )
@@ -967,8 +964,7 @@ def get_weekly_counts():
         exit_query = f"""
         SELECT CAST(exit_time AS DATE) AS date, COUNT(*) AS count
         FROM building_persons
-        WHERE exit_time BETWEEN ? AND ?
-        {("AND building_uuid = ?" if building_uuid else "")}
+        {where_clause}
         GROUP BY CAST(exit_time AS DATE)
         """
 
@@ -982,12 +978,13 @@ def get_weekly_counts():
 
         # Generate all dates in the range
         date_range = [start_date + timedelta(days=x) for x in range(7)]
-        date_strings = [date.strftime('%Y-%m-%d') for date in date_range]
+        date_strings = [date.strftime('%d/%m/%Y') for date in date_range]  # Changed to dd/mm/yyyy
         weekday_names = [date.strftime('%A') for date in date_range]
 
-        # Initialize counts with 0
-        entry_counts = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
-        exit_counts = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
+        # Initialize counts with 0 - using original format for internal matching
+        internal_date_format = {date.strftime('%Y-%m-%d'): 0 for date in date_range}
+        entry_counts = internal_date_format.copy()
+        exit_counts = internal_date_format.copy()
 
         # Populate counts from query results
         for row in entry_results:
@@ -997,12 +994,12 @@ def get_weekly_counts():
             exit_counts[str(row.date)] = row.count
 
         response_data = {
-            'start_date': start_date.strftime('%Y-%m-%d'),
-            'end_date': end_date.strftime('%Y-%m-%d'),
+            'start_date': start_date.strftime('%d/%m/%Y'),  # Changed to dd/mm/yyyy
+            'end_date': end_date.strftime('%d/%m/%Y'),    # Changed to dd/mm/yyyy
             'dates': date_strings,
             'weekdays': weekday_names,
-            'entry': [entry_counts[date] for date in date_strings],
-            'exit': [exit_counts[date] for date in date_strings]
+            'entry': [entry_counts[date.strftime('%Y-%m-%d')] for date in date_range],
+            'exit': [exit_counts[date.strftime('%Y-%m-%d')] if entry_counts[date.strftime('%Y-%m-%d')] > 0 else 0 for date in date_range]
         }
 
         return jsonify(response_data)
@@ -1014,6 +1011,7 @@ def get_weekly_counts():
             cursor.close()
         if 'connection' in locals():
             connection.close()
+
 # Route to count gate info
 @app.route('/count-gate', methods=['GET'])
 @token_required
