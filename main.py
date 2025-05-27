@@ -8,6 +8,8 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import hashlib
 import secrets
+import re
+import shutil
 from functools import wraps
 
 app = Flask(__name__)
@@ -158,10 +160,6 @@ def login():
         if 'conn' in locals():
             conn.close()
 
-@app.route('/uploads/<path:filename>')
-def serve_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
 # Route to unregistered persons
 @app.route('/unregistered', methods=['POST'])
 @token_required
@@ -171,6 +169,7 @@ def unregistered():
 
     try:
         person_uuid = str(uuid.uuid4())
+
         # Handle file uploads
         bpjs = request.files.get('bpjs')
         medical_checkup = request.files.get('medical_checkup')
@@ -199,21 +198,22 @@ def unregistered():
         building_uuid = request.form.get('building_uuid')
         insert = request.form.get('insert')
 
-        # Insert person data
-        cursor.execute("""
-            INSERT INTO persons (uuid, image, name, nik, email, address, 
-                            emergency_contact_name, emergency_contact_address,
-                            emergency_contact_relation, emergency_contact_phone,
-                            birth_place, birth_date, gender, phone,
-                            bpjs, medical_checkup, skck)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (person_uuid, image, name, nik, email, address,
-            emergency_contact_name, emergency_contact_address,
-            emergency_contact_relation, f"+62{emergency_contact_phone}",
-            birth_place, birth_date, gender, f"+62{phone}",
-            bpjs_filename, medical_filename, skck_filename))
-
         if insert == '1':
+            person_uuid = str(uuid.uuid4())
+            # Insert person data
+            cursor.execute("""
+                INSERT INTO persons (uuid, image, name, nik, email, address, 
+                                emergency_contact_name, emergency_contact_address,
+                                emergency_contact_relation, emergency_contact_phone,
+                                birth_place, birth_date, gender, phone,
+                                bpjs, medical_checkup, skck)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (person_uuid, image, name, nik, email, address,
+                emergency_contact_name, emergency_contact_address,
+                emergency_contact_relation, f"+62{emergency_contact_phone}",
+                birth_place, birth_date, gender, f"+62{phone}",
+                bpjs_filename, medical_filename, skck_filename))
+        
             building_person_uuid = str(uuid.uuid4())
             entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -229,10 +229,45 @@ def unregistered():
                 WHERE uuid = ?
             """, (building_uuid,))
         else:
+            person_uuid = image.split('.')[0]
+
+            src_file = f"{UPLOAD_FOLDER}/undefined/{person_uuid}.jpg"
+            dst_dir = f"{UPLOAD_FOLDER}/{person_uuid}"
+            
+            os.makedirs(dst_dir, exist_ok=True)
+
+            existing_files = [f for f in os.listdir(dst_dir) if re.match(r'^\d+\.jpg$', f)]
+
+            if existing_files:
+                numbers = [int(re.match(r'^(\d+)\.jpg$', f).group(1)) for f in existing_files]
+                next_number = max(numbers) + 1
+            else:
+                next_number = 1
+
+            image = f"{next_number}.jpg"
+
+            dst_file = os.path.join(dst_dir, image)
+
+            if os.path.exists(src_file):
+                shutil.move(src_file, dst_file)
+
+            cursor.execute("""
+                INSERT INTO persons (uuid, image, name, nik, email, address, 
+                                emergency_contact_name, emergency_contact_address,
+                                emergency_contact_relation, emergency_contact_phone,
+                                birth_place, birth_date, gender, phone,
+                                bpjs, medical_checkup, skck)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (person_uuid, image, name, nik, email, address,
+                emergency_contact_name, emergency_contact_address,
+                emergency_contact_relation, f"+62{emergency_contact_phone}",
+                birth_place, birth_date, gender, f"+62{phone}",
+                bpjs_filename, medical_filename, skck_filename))
+
             building_person_uuid = request.form.get('building_person_uuid')
             cursor.execute("""
-                UPDATE building_persons SET person_uuid = ? WHERE uuid = ?
-            """, (person_uuid, building_person_uuid))
+                UPDATE building_persons SET person_uuid = ?, image = ? WHERE uuid = ?
+            """, (person_uuid, image, building_person_uuid))
 
         connection.commit()
         return jsonify({'message': 'Entry person successfully!'}), 200
@@ -276,9 +311,29 @@ def registered():
                 WHERE uuid = ?
             """, (building_uuid,))
         else:
+            src_file = f"{UPLOAD_FOLDER}/undefined/{image}"
+            dst_dir = f"{UPLOAD_FOLDER}/{person_uuid}"
+
+            os.makedirs(dst_dir, exist_ok=True)
+
+            existing_files = [f for f in os.listdir(dst_dir) if re.match(r'^\d+\.jpg$', f)]
+
+            if existing_files:
+                numbers = [int(re.match(r'^(\d+)\.jpg$', f).group(1)) for f in existing_files]
+                next_number = max(numbers) + 1
+            else:
+                next_number = 1
+
+            image = f"{next_number}.jpg"
+
+            dst_file = os.path.join(dst_dir, image)
+
+            if os.path.exists(src_file):
+                shutil.move(src_file, dst_file)
+        
             cursor.execute("""
-                UPDATE building_persons SET person_uuid = ? WHERE uuid = ?
-            """, (person_uuid, building_person_uuid))
+                UPDATE building_persons SET person_uuid = ?, image = ? WHERE uuid = ?
+            """, (person_uuid, image, building_person_uuid))
 
         connection.commit()
         return jsonify({'message': 'Entry person successfully!'}), 200
@@ -403,7 +458,7 @@ def create_person():
         person_uuid = str(uuid.uuid4())
         
         # Handle file uploads
-        image_filename = handle_file_upload(image, app.config['UPLOAD_FOLDER'], person_uuid)
+        image_filename = handle_file_upload(image, f"{app.config['UPLOAD_FOLDER']}/{person_uuid}", person_uuid)
         bpjs_filename = handle_file_upload(bpjs, app.config['UPLOAD_FOLDER_BPJS'], person_uuid)
         medical_filename = handle_file_upload(medical_checkup, app.config['UPLOAD_FOLDER_MEDICAL_CHECKUP'], person_uuid)
         skck_filename = handle_file_upload(skck, app.config['UPLOAD_FOLDER_SKCK'], person_uuid)
@@ -575,7 +630,7 @@ def delete_person(person_uuid):
         
         # Delete all associated files
         if person_dict['image']:
-            delete_file(os.path.join(app.config['UPLOAD_FOLDER'], person_dict['image']))
+            delete_file(os.path.join(f"{app.config['UPLOAD_FOLDER']}/{person_dict['uuid']}", person_dict['image']))
         if person_dict['bpjs']:
             delete_file(os.path.join(app.config['UPLOAD_FOLDER_BPJS'], person_dict['bpjs']))
         if person_dict['medical_checkup']:
@@ -611,7 +666,8 @@ def get_persons_paginate():
         base_query = """
         SELECT 
             *,
-            CONVERT(varchar, birth_date, 23) as birth_date
+            CONVERT(varchar, birth_date, 23) as birth_date,
+            uuid + '/' + image as image_path
         FROM persons
         """
         count_query = "SELECT COUNT(*) AS total FROM persons"
@@ -785,7 +841,11 @@ def get_building_persons():
                 persons.image AS person_image,
                 persons.name AS person_name,
                 entry_time,
-                exit_time
+                exit_time,
+                CASE 
+                    WHEN person_uuid IS NULL THEN 'undefined/' + building_persons.image
+                    ELSE person_uuid + '/' + building_persons.image
+                END AS image_path
             FROM building_persons 
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
             WHERE building_uuid = ? AND
@@ -860,7 +920,11 @@ def get_building_persons_history():
                 persons.image AS person_image,
                 persons.name AS person_name,
                 entry_time,
-                exit_time
+                exit_time,
+                CASE 
+                    WHEN person_uuid IS NULL THEN 'undefined/' + building_persons.image
+                    ELSE CAST(person_uuid AS VARCHAR(36)) + '/' + building_persons.image
+                END AS image_path
             FROM building_persons 
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
             INNER JOIN buildings ON buildings.uuid = building_persons.building_uuid
