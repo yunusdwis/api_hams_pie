@@ -189,6 +189,9 @@ def unregistered():
         emergency_contact_address = request.form.get('emergency_contact_address')
         emergency_contact_relation = request.form.get('emergency_contact_relation')
         emergency_contact_phone = request.form.get('emergency_contact_phone')
+        company = request.form.get('company')
+        compartment = request.form.get('compartment')
+        departement = request.form.get('departement')
         birth_place = request.form.get('birth_place')
 
         birth_date = request.form.get('birth_date')
@@ -206,13 +209,13 @@ def unregistered():
                                 emergency_contact_name, emergency_contact_address,
                                 emergency_contact_relation, emergency_contact_phone,
                                 birth_place, birth_date, gender, phone,
-                                bpjs, medical_checkup, skck)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                bpjs, medical_checkup, skck, company, compartment, departement)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (person_uuid, image, name, nik, email, address,
                 emergency_contact_name, emergency_contact_address,
                 emergency_contact_relation, f"+62{emergency_contact_phone}",
                 birth_place, birth_date, gender, f"+62{phone}",
-                bpjs_filename, medical_filename, skck_filename))
+                bpjs_filename, medical_filename, skck_filename, company, compartment, departement))
         
             building_person_uuid = str(uuid.uuid4())
             entry_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -256,13 +259,13 @@ def unregistered():
                                 emergency_contact_name, emergency_contact_address,
                                 emergency_contact_relation, emergency_contact_phone,
                                 birth_place, birth_date, gender, phone,
-                                bpjs, medical_checkup, skck)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                bpjs, medical_checkup, skck, company, compartment, departement)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (person_uuid, image, name, nik, email, address,
                 emergency_contact_name, emergency_contact_address,
                 emergency_contact_relation, f"+62{emergency_contact_phone}",
                 birth_place, birth_date, gender, f"+62{phone}",
-                bpjs_filename, medical_filename, skck_filename))
+                bpjs_filename, medical_filename, skck_filename, company, compartment, departement))
 
             building_person_uuid = request.form.get('building_person_uuid')
             cursor.execute("""
@@ -431,7 +434,7 @@ def get_persons():
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("SELECT * FROM persons")
+        cursor.execute("SELECT * FROM persons ORDER BY name ASC")
         columns = [desc[0] for desc in cursor.description]  # get column names
         persons = cursor.fetchall()
         result = [dict(zip(columns, row)) for row in persons]  # convert to list of dicts
@@ -844,7 +847,7 @@ def get_building_persons():
                 exit_time,
                 CASE 
                     WHEN person_uuid IS NULL THEN 'undefined/' + building_persons.image
-                    ELSE person_uuid + '/' + building_persons.image
+                    ELSE CONVERT(varchar(36), person_uuid) + '/' + building_persons.image
                 END AS image_path
             FROM building_persons 
             LEFT JOIN persons ON persons.uuid = building_persons.person_uuid
@@ -906,6 +909,21 @@ def get_building_persons_history():
     search = request.args.get('search')
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
+    sort_param = request.args.get('sort', 'entry_time,desc')
+    sort_parts = sort_param.split(',')
+    sort_column = sort_parts[0]
+    sort_direction = sort_parts[1] if len(sort_parts) > 1 else 'desc'
+
+    column_mapping = {
+        'name': 'persons.name',
+        'building': 'buildings.name',
+        'entry_time': 'entry_time',
+        'exit_time': 'exit_time'
+    }
+
+    if sort_column not in column_mapping:
+        sort_column = 'entry_time'
+        sort_direction = 'desc'
 
     connection = get_db_connection()
     try:
@@ -956,8 +974,9 @@ def get_building_persons_history():
         if conditions:
             base_query += " WHERE " + " AND ".join(conditions)
 
-        # Add pagination
-        base_query += " ORDER BY entry_time DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        order_by = f" ORDER BY {column_mapping[sort_column]} {sort_direction.upper()} "
+        base_query += order_by
+        base_query += " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
         params.extend([offset, limit])
 
         cursor = connection.cursor()
@@ -986,6 +1005,57 @@ def get_building_persons_history():
             'pages': (total + limit - 1) // limit
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        connection.close()
+
+@app.route('/building-persons/<string:building_person_uuid>', methods=['DELETE'])
+@token_required
+def delete_building_person(building_person_uuid):
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        # First, get the record to determine if it's an exit or entry
+        cursor.execute("""
+            SELECT building_uuid, exit_time 
+            FROM building_persons 
+            WHERE uuid = ?
+        """, (building_person_uuid,))
+        record = cursor.fetchone()
+        
+        if not record:
+            return jsonify({'error': 'Record not found'}), 404
+            
+        building_uuid = record.building_uuid
+        exit_time = record.exit_time
+        
+        # Delete the record
+        cursor.execute("DELETE FROM building_persons WHERE uuid = ?", (building_person_uuid,))
+        
+        # Update building counts
+        if exit_time is None:
+            # This was an active entry - decrement entry and total
+            cursor.execute("""
+                UPDATE buildings 
+                SET entry = entry - 1, 
+                    total = total - 1 
+                WHERE uuid = ?
+            """, (building_uuid,))
+        else:
+            # This was an exit - decrement exit count
+            cursor.execute("""
+                UPDATE buildings 
+                SET [exit] = [exit] - 1 
+                WHERE uuid = ?
+            """, (building_uuid,))
+        
+        connection.commit()
+        return jsonify({'message': 'Record deleted successfully!'}), 200
+        
+    except Exception as e:
+        connection.rollback()
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
