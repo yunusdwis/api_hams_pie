@@ -11,6 +11,7 @@ import secrets
 import re
 import shutil
 from functools import wraps
+from time import mktime
 
 app = Flask(__name__)
 CORS(app)
@@ -20,7 +21,7 @@ DB_CONFIG = {
     'host': 'localhost',
     'user': 'root',
     'password': '',
-    'database': 'system_hams_pie'
+    'database': 'system_hams_piu'
 }
 
 UPLOAD_FOLDER = r'C:\Putra\Proyek\Createch\PIE\Projects\people_counter_v2\people'
@@ -1177,6 +1178,169 @@ def count_gate():
     finally:
         cursor.close()
         connection.close()
+
+@app.route('/logout', methods=['POST'])
+@token_required
+def logout():
+    # Get the token from the Authorization header
+    token = request.headers.get('Authorization')
+    
+    if not token:
+        return jsonify({'error': 'Token is missing'}), 401
+    
+    # Remove 'Bearer ' prefix if present
+    if token.startswith('Bearer '):
+        token = token[7:]
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Update the token to NULL for the user with this token
+        cursor.execute("""
+            UPDATE `user` 
+            SET token = NULL 
+            WHERE token = %s
+        """, (token,))
+        
+        conn.commit()
+        
+        return jsonify({'message': 'Logout successful'}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# Add this constant with your other constants
+DANGER_CODE = '548312'  # Your emergency code
+
+@app.route('/danger-mode', methods=['GET'])
+@token_required
+def get_danger_mode():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT 
+                COALESCE(danger_mode, FALSE) AS danger_mode,
+                danger_start_time 
+            FROM settings 
+            LIMIT 1
+        """)
+        settings = cursor.fetchone()
+        
+        if not settings:
+            return jsonify({
+                'danger_mode': False,
+                'danger_time_elapsed': "00:00:00"
+            })
+            
+        start_time = settings.get('danger_start_time')
+        
+        if start_time:
+            now = datetime.now()
+            elapsed = now - start_time
+            total_seconds = int(elapsed.total_seconds())
+            
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            
+            formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            formatted_time = "00:00:00"
+        
+        return jsonify({
+            'danger_mode': bool(settings.get('danger_mode', False)),
+            'danger_time_elapsed': formatted_time
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+@app.route('/danger-mode', methods=['POST'])
+@token_required
+def set_danger_mode():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        danger_mode = data.get('danger_mode', False)
+        code = data.get('code', '')
+        
+        if code != DANGER_CODE:
+            return jsonify({'error': 'Invalid danger code'}), 401
+            
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # First ensure settings exist
+        cursor.execute("SELECT 1 FROM settings LIMIT 1")
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO settings (danger_mode) VALUES (FALSE)")
+        
+        if danger_mode:
+            # Activating danger mode
+            cursor.execute("""
+                UPDATE settings 
+                SET danger_mode = TRUE, 
+                    danger_start_time = CURRENT_TIMESTAMP 
+                LIMIT 1
+            """)
+        else:
+            # Deactivating danger mode
+            cursor.execute("""
+                UPDATE settings 
+                SET danger_mode = FALSE, 
+                    danger_start_time = NULL 
+                LIMIT 1
+            """)
+        
+        conn.commit()
+        
+        # Get updated settings to return
+        cursor.execute("""
+            SELECT 
+                COALESCE(danger_mode, FALSE) AS danger_mode,
+                danger_start_time 
+            FROM settings 
+            LIMIT 1
+        """)
+        updated_settings = cursor.fetchone()
+        
+        if not updated_settings:
+            return jsonify({
+                'message': 'Danger mode updated but failed to verify',
+                'danger_mode': danger_mode,
+                'danger_start_time': None
+            })
+        
+        start_time = updated_settings.get('danger_start_time')
+        start_timestamp = mktime(start_time.timetuple()) if start_time else None
+        
+        return jsonify({
+            'message': 'Danger mode updated successfully',
+            'danger_mode': bool(updated_settings.get('danger_mode', False)),
+            'danger_start_time': start_timestamp
+        })
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
 if __name__ == '__main__':
     # Set up argument parser
