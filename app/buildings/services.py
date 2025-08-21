@@ -232,7 +232,7 @@ def get_buildings_service():
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM buildings")
+        cursor.execute("SELECT * FROM buildings ORDER BY name ASC")
         buildings = cursor.fetchall()
         return jsonify(buildings)
     except Exception as e:
